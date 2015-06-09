@@ -102,6 +102,7 @@
     <Text Include="ReadMe.txt" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ColorConv.h" />
     <ClInclude Include="CV_Card.h" />
     <ClInclude Include="CV_CardDlg.h" />
     <ClInclude Include="Resource.h" />
@@ -109,6 +110,7 @@
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="ColorConv.cpp" />
     <ClCompile Include="CV_Card.cpp" />
     <ClCompile Include="CV_CardDlg.cpp" />
     <ClCompile Include="stdafx.cpp">
