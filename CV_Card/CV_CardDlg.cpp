@@ -14,7 +14,13 @@
 #endif
 
 // CCV_CardDlg 대화 상자
+#define LEARNINGCOUNT 100
 
+#define MAXAREA 7500
+
+#define LEARNING 1
+#define LEARNCARD 1
+#define READING 2
 
 unsigned char bmp_color_head[40] = {
 	40, 0, 0, 0, 184, 0, 0, 0, 148, 0,
@@ -25,10 +31,32 @@ unsigned char bmp_color_head[40] = {
 CWnd *dp;
 HWND d_cap;
 
+
+unsigned char BinaryIMG[MAX_WIDTH * MAX_HEIGHT];
+unsigned char FeatureMap[MAX_WIDTH * MAX_HEIGHT];
+unsigned char RedMap[MAX_WIDTH * MAX_HEIGHT];
+unsigned char BlueMap[MAX_WIDTH * MAX_HEIGHT];
+unsigned char GreenMap[MAX_WIDTH * MAX_HEIGHT];
+
+unsigned int CountFeature = 0;
+Feature ObjectArray[255];
+
+Feature LearnedObject[255];
+Feature AccObject[255];
+
+
+void ReadingCard(int index);
+
 CCV_CardDlg::CCV_CardDlg(CWnd* pParent /*=NULL*/)
 	: CDialogEx(CCV_CardDlg::IDD, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
+	ZeroMemory(RedMap, sizeof(RedMap));
+	ZeroMemory(BlueMap, sizeof(BlueMap));
+	ZeroMemory(GreenMap, sizeof(GreenMap));
+#if !LEARNING
+	ReadingCard(READING);
+#endif
 }
 
 void CCV_CardDlg::DoDataExchange(CDataExchange* pDX)
@@ -41,6 +69,477 @@ BEGIN_MESSAGE_MAP(CCV_CardDlg, CDialogEx)
 	ON_WM_QUERYDRAGICON()
 END_MESSAGE_MAP()
 
+void OnMedianFilter(int height, int width)
+{
+	CString title;
+	CString my_name;
+
+	int mc = 0, mr = 0;
+	int median[9];
+	int temp;
+	int heightm1 = height - 1;
+	int widthm1 = width - 1;
+
+	for (int i = 1; i < heightm1; i++)
+	{
+		for (int j = 1; j < widthm1; j++)
+		{
+			for (mc = 0; mc < 3; mc++)
+			{
+				for (mr = 0; mr < 3; mr++)
+				{
+					median[mc * 3 + mr] = BinaryIMG[((i + mc - 1) * width) + j + mr - 1];
+				}
+			}
+
+			for (int k = 0; k < 9; k++)
+			{
+				for (int l = 0; l < 9; l++)
+				{
+					if (median[l] < median[l + 1])
+					{
+						temp = median[l];
+						median[l] = median[l + 1];
+						median[l + 1] = temp;
+					}
+				}
+			}
+			BinaryIMG[i * width + j] = median[4];
+		}
+	}
+}
+
+void OnErosion(int height, int width)
+{
+	CString title;
+	CString my_name;
+
+	int mr, mc;
+	int newValue;
+	int MaskBox[3][3] = 
+	{ 
+		{ 255, 0, 255 },
+		{ 0, 0, 0 },
+		{ 255, 0, 255 }
+	};
+	unsigned char Erosion[MAX_WIDTH * MAX_HEIGHT];
+	ZeroMemory(Erosion, sizeof(Erosion));
+
+	for (int i = 1; i < height - 1; i++)
+	{
+		for (int j = 1; j < width - 1; j++)
+		{
+			if (BinaryIMG[(i * width) + j] == 255)
+			{
+				int flag = 0;
+				for (mr = 0; mr < 3; mr++)
+				{
+					for (mc = 0; mc < 3; mc++)
+					{
+						if (MaskBox[mr][mc] == 0 &&
+							MaskBox[mr][mc] != BinaryIMG[((i + mr - 1) * width) + j + mc - 1])
+							flag++;
+					}
+				}
+				if (flag == 0)
+					Erosion[(i*width) + j] = 0;
+				else
+					Erosion[(i*width) + j] = 255;
+			}
+		}
+	}
+	memcpy(BinaryIMG, Erosion, sizeof(Erosion));
+}
+void OnDilation(int height, int width)
+{
+	CString title;
+	CString my_name;
+
+	int mr, mc;
+	int newValue;
+	int MaskBox[3][3] =
+	{
+		{ 255, 0, 255 },
+		{ 0, 0, 0 },
+		{ 255, 0, 255 }
+	};
+	unsigned char Dilation[MAX_WIDTH * MAX_HEIGHT];
+	ZeroMemory(Dilation, sizeof(Dilation));
+
+	for (int i = 1; i < height - 1; i++)
+	{
+		for (int j = 1; j < width - 1; j++)
+		{
+			int flag = 0;
+			for (mr = 0; mr < 3; mr++)
+			{
+				for (mc = 0; mc < 3; mc++)
+				{
+					if (MaskBox[mr][mc] == 0 &&
+						MaskBox[mr][mc] == BinaryIMG[((i + mr - 1) * width) + j + mc - 1])
+						flag++;
+				}
+			}
+			if (flag != 0)
+				Dilation[(i*width) + j] = 0;
+			else
+				Dilation[(i*width) + j] = 255;
+		}
+	}
+	memcpy(BinaryIMG, Dilation, sizeof(Dilation));
+}
+void OnFeatureDivision(int height, int width)
+{
+	int i, j, x, y, val, index;
+	int number = 0, featID = 1;
+	int newVal, oldVal, nbr1, nbr2, nbr4, nbr8;
+	memcpy(FeatureMap, BinaryIMG, sizeof(BinaryIMG));
+
+	for (y = 1; y < height - 1; y++)
+	{
+		for (x = 1; x < width - 1; x++)
+		{
+			int Cur = y * width + x;
+			int CurUp = (y - 1) * width + x;
+			val = FeatureMap[Cur];
+			index = 0;
+			nbr1 = FeatureMap[CurUp + 1];	if (nbr1 != 0) index += 1;
+			nbr2 = FeatureMap[CurUp];		if (nbr2 != 0) index += 2;
+			nbr4 = FeatureMap[CurUp - 1];	if (nbr4 != 0) index += 4;
+			nbr8 = FeatureMap[Cur - 1];		if (nbr8 != 0) index += 8;
+
+			if (val != 0)
+			{
+				switch (index)
+				{
+				case 0:
+					if (number < 255)
+					{
+						number++;
+						newVal = featID;
+						featID++;
+					}
+					break;
+				case 1:
+				case 3:
+				case 7:
+				case 11:
+				case 15:
+					newVal = nbr1;
+					break;
+				case 2:
+				case 6:
+				case 10:
+				case 14:
+					newVal = nbr2;
+					break;
+				case 4:
+				case 12:
+					newVal = nbr4;
+					break;
+				case 8:
+					newVal = nbr8;
+					break;
+				default:
+					newVal = nbr1;
+					switch (index) {
+					case 5: // 1 + 4
+						oldVal = nbr4;
+						break;
+					case 9: // 1 + 8
+						oldVal = nbr8;
+						break;
+					case 13: // 1 + 8 + 4
+						oldVal = nbr8;
+						break;
+					}
+					if (oldVal != newVal)
+					{
+						number--;
+						for (i = 1; i < y; i++)
+						{
+							for (j = 1; j < width - 1; j++)
+							{
+								if (FeatureMap[i * width + j] == oldVal)
+									FeatureMap[i * width + j] = newVal;
+							}
+						}
+						for (j = 1; j < x; j++)
+						{
+							if (FeatureMap[y * width + j] == oldVal)
+								FeatureMap[y * width + j] = newVal;
+						}
+					}
+					break;
+				}	//switch
+				FeatureMap[Cur] = newVal;
+			}	//if is feature
+		}	//for x
+	}
+	CountFeature = number;
+	char tempSort[255];
+	int sortCount = 1;
+	ZeroMemory(tempSort, 255);
+	for (y = 1; y < height - 1; y++)
+	{
+		for (x = 1; x < width - 1; x++)
+		{
+			int Cur = y * width + x;
+			if (FeatureMap[Cur] > 0)
+			{
+				if (tempSort[FeatureMap[Cur]] == 0)
+				{
+					tempSort[FeatureMap[Cur]] = sortCount;
+					sortCount++;
+				}
+				if (tempSort[FeatureMap[Cur]] != 0)
+				{
+					FeatureMap[Cur] = tempSort[FeatureMap[Cur]];
+				}
+			}
+		}
+	}
+	/*FILE* pfile = NULL;
+	pfile = fopen("arr.txt", "w");
+	if (pfile == NULL)
+		return;
+	for (int i = 0; i < height; i++)
+	{
+		for (int j = 0; j < width; j++)
+		{
+			fprintf(pfile, "%d ", FeatureMap[i * width + j]);
+		}
+		fprintf(pfile, "\n");
+	}
+	fclose(pfile);*/
+}
+void OnSubFeatureDivision(int startX, int startY, int endX, int endY)
+{
+	int i, j, x, y, val, index;
+	int number = 0, featID = 1;
+	int newVal, oldVal, nbr1, nbr2, nbr4, nbr8;
+	memcpy(FeatureMap, BinaryIMG, sizeof(BinaryIMG));
+
+	for (y = startY; y < endY - 1; y++)
+	{
+		for (x = startX; x < endX - 1; x++)
+		{
+			int Cur = y * (endX - startX) + x;
+			int CurUp = (y - 1) * (endX - startX) + x;
+			val = FeatureMap[Cur];
+			index = 0;
+			nbr1 = FeatureMap[CurUp + 1];	if (nbr1 != 0) index += 1;
+			nbr2 = FeatureMap[CurUp];		if (nbr2 != 0) index += 2;
+			nbr4 = FeatureMap[CurUp - 1];	if (nbr4 != 0) index += 4;
+			nbr8 = FeatureMap[Cur - 1];		if (nbr8 != 0) index += 8;
+
+			if (val != 0)
+			{
+				switch (index)
+				{
+				case 0:
+					if (number < 255)
+					{
+						number++;
+						newVal = featID;
+						featID++;
+					}
+					break;
+				case 1:
+				case 3:
+				case 7:
+				case 11:
+				case 15:
+					newVal = nbr1;
+					break;
+				case 2:
+				case 6:
+				case 10:
+				case 14:
+					newVal = nbr2;
+					break;
+				case 4:
+				case 12:
+					newVal = nbr4;
+					break;
+				case 8:
+					newVal = nbr8;
+					break;
+				default:
+					newVal = nbr1;
+					switch (index) {
+					case 5: // 1 + 4
+						oldVal = nbr4;
+						break;
+					case 9: // 1 + 8
+						oldVal = nbr8;
+						break;
+					case 13: // 1 + 8 + 4
+						oldVal = nbr8;
+						break;
+					}
+					if (oldVal != newVal)
+					{
+						number--;
+						for (i = 1; i < y; i++)
+						{
+							for (j = 1; j < (endX - startX) - 1; j++)
+							{
+								if (FeatureMap[i * (endX - startX) + j] == oldVal)
+									FeatureMap[i * (endX - startX) + j] = newVal;
+							}
+						}
+						for (j = 1; j < x; j++)
+						{
+							if (FeatureMap[y * (endX - startX) + j] == oldVal)
+								FeatureMap[y * (endX - startX) + j] = newVal;
+						}
+					}
+					break;
+				}	//switch
+				FeatureMap[Cur] = newVal;
+			}	//if is feature
+		}	//for x
+	}
+	CountFeature = number;
+	char tempSort[255];
+	int sortCount = 1;
+	ZeroMemory(tempSort, 255);
+	for (y = startY; y < endY - 1; y++)
+	{
+		for (x = startX; x < endX - 1; x++)
+		{
+			int Cur = y * (endX - startX) + x;
+			if (FeatureMap[Cur] > 0)
+			{
+				if (tempSort[FeatureMap[Cur]] == 0)
+				{
+					tempSort[FeatureMap[Cur]] = sortCount;
+					sortCount++;
+				}
+				if (tempSort[FeatureMap[Cur]] != 0)
+				{
+					FeatureMap[Cur] = tempSort[FeatureMap[Cur]];
+				}
+			}
+		}
+	}
+	/*FILE* pfile = NULL;
+	pfile = fopen("arr.txt", "w");
+	if (pfile == NULL)
+	return;
+	for (int i = 0; i < height; i++)
+	{
+	for (int j = 0; j < width; j++)
+	{
+	fprintf(pfile, "%d ", FeatureMap[i * width + j]);
+	}
+	fprintf(pfile, "\n");
+	}
+	fclose(pfile);*/
+}
+void OnAreaFraction(int height, int width)
+{
+	ZeroMemory(ObjectArray, sizeof(ObjectArray));
+	for (int i = 0; i < CountFeature; i++)
+	{
+		ObjectArray[i].startX = MAX_WIDTH;
+		ObjectArray[i].startY = MAX_HEIGHT;
+	}
+	int nbr1 = 0, nbr2 = 0, nbr4 = 0, nbr8 = 0;
+
+	for (int i = 1; i < height - 1; i++)
+	{
+		for (int j = 1; j < width - 1; j++)
+		{
+			int Cur = i * width + j;
+			int CurUp = (i - 1) * width + j;
+			int val = FeatureMap[Cur];
+			int index = 0;
+
+			nbr8 = FeatureMap[Cur - 1];		if (nbr8 > 0 && nbr8 < CountFeature) index += 8;
+			nbr4 = FeatureMap[CurUp - 1];	if (nbr4 > 0 && nbr8 < CountFeature) index += 4;
+			nbr2 = FeatureMap[CurUp];		if (nbr2 > 0 && nbr8 < CountFeature) index += 2;
+			nbr1 = FeatureMap[CurUp + 1];	if (nbr1 > 0 && nbr8 < CountFeature) index += 1;
+
+			if (val > 0 )
+			{
+				ObjectArray[val - 1].area++;
+				ObjectArray[val - 1].x += j;
+				ObjectArray[val - 1].y += i;
+				if (ObjectArray[val - 1].startX > j)
+					ObjectArray[val - 1].startX = j;
+				if (ObjectArray[val - 1].endX < j)
+					ObjectArray[val - 1].endX = j;
+
+				if (ObjectArray[val - 1].startY > i)
+					ObjectArray[val - 1].startY = i;
+				if (ObjectArray[val - 1].endY < i)
+					ObjectArray[val - 1].endY = i;
+
+				if (nbr8 < val)
+				{
+					ObjectArray[val - 1].perim++;
+				}
+				if (RedMap[Cur] == 255)
+					ObjectArray[val - 1].red++;
+				if (GreenMap[Cur] == 255)
+					ObjectArray[val - 1].green++;
+				if (BlueMap[Cur] == 255)
+					ObjectArray[val - 1].blue++;
+			}
+			else
+			{
+				if (nbr8 > val)
+				{
+					ObjectArray[val - 1].perim++;
+				}
+			}
+		}
+	}
+	for (int i = 0; i < CountFeature; i++)
+	{
+		if (ObjectArray[i].area != 0 && ObjectArray[i].perim != 0)
+		{
+			ObjectArray[i].perim *= 1.5708;
+			ObjectArray[i].x /= ObjectArray[i].area;
+			ObjectArray[i].y /= ObjectArray[i].area;
+			ObjectArray[i].y = height - ObjectArray[i].y;
+
+			ObjectArray[i].startY = height - ObjectArray[i].startY;
+			ObjectArray[i].endY = height - ObjectArray[i].endY;
+
+			if (ObjectArray[i].red > 50)
+				ObjectArray[i].red = MAXAREA - ObjectArray[i].area;
+			if (ObjectArray[i].green > 50)
+				ObjectArray[i].green = MAXAREA - ObjectArray[i].area;
+			if (ObjectArray[i].blue > 50)
+				ObjectArray[i].blue = MAXAREA - ObjectArray[i].area;
+		}
+	}
+	/*int nbr1 = 0, nbr2 = 0, nbr4 = 0, nbr8 = 0;
+
+	for (int i = 1; i < height - 1; i++)
+	{
+		for (int j = 1; j < width - 1; j++)
+		{
+			int Cur = i * width + j;
+			int CurUp = (i - 1) * width + j;
+			int val = FeatureMap[Cur];
+			int index = 0;
+
+			nbr8 = FeatureMap[Cur - 1];		if (nbr8 > 0 && nbr8 < CountFeature) index += 8;
+			nbr4 = FeatureMap[CurUp - 1];	if (nbr4 > 0 && nbr8 < CountFeature) index += 4;
+			nbr2 = FeatureMap[CurUp];		if (nbr2 > 0 && nbr8 < CountFeature) index += 2;
+			nbr1 = FeatureMap[CurUp + 1];	if (nbr1 > 0 && nbr8 < CountFeature) index += 1;
+
+			if (val > 0.5f)
+				area++;
+			if (((val > 0.5f) && (nbr8 < 0.5f) || (val < 0.5f) && (nbr8 > 0.5f)))
+				icept++;
+		}
+	}*/
+}
 void Otzu_Threshold(unsigned char * orgImg, unsigned char *outImg, int height, int width)
 {
 	register int  i, t;
@@ -112,6 +611,14 @@ void Otzu_Threshold(unsigned char * orgImg, unsigned char *outImg, int height, i
 		else
 			outImg[i] = 255;
 	}
+	
+	/*for (int i = 0; i < height*width; i++)
+	{
+		if (orgImg[i] < 100)
+			outImg[i] = 0;
+		else
+			outImg[i] = 255;
+	}*/
 }
 
 VOID RGB2Gray(char *InImg, char *OutImg, int height, int width)
@@ -129,13 +636,68 @@ VOID RGB2Gray(char *InImg, char *OutImg, int height, int width)
 			g = InImg[iJump + 1];  // Green
 			r = InImg[iJump + 2];  // Red
 
-			gray = (r + b + g) / 3;
+			if ((b + g + r) > 220)
+			{
+				if (r <= 200 && g <= 200 && b > 200)
+				{
+					BlueMap[(iCntY * width) + iCntX] = 255;
+				}
+				if (b <= 200 && r <= 200 && g > 200)
+				{
+					GreenMap[(iCntY * width) + iCntX] = 255;
+				}
+				if (b <= 200 && g <= 200 && r >= 200)
+				{
+					RedMap[(iCntY * width) + iCntX] = 255;
+				}
+			}
+			gray = (int)(r * 0.30 + g * 0.59 + b * 0.11);
+			//gray = (r + b + g) / 3;
 
 			OutImg[iJump] = gray;
 			OutImg[iJump + 1] = gray;
 			OutImg[iJump + 2] = gray;
 		}
 	}
+	static int k = 0;
+	if (k == 5)
+	{
+		int count = 0;
+		FILE* pfile = NULL;
+		pfile = fopen("red.txt", "w");
+		if (pfile == NULL)
+			return;
+		for (int i = 0; i < height; i++)
+		{
+			for (int j = 0; j < width; j++)
+			{
+				fprintf(pfile, "%d ",RedMap[i * width + j]);
+			}
+			fprintf(pfile, "\n");
+		}
+		fclose(pfile);
+	}
+	k++;
+	/*static int k = 0;
+	if (k == 5)
+	{
+		int count = 0;
+		FILE* pfile = NULL;
+		pfile = fopen("red.txt", "w");
+		if (pfile == NULL)
+			return;
+		for (int i = 0; i < height; i++)
+		{
+			for (int j = 0; j < width; j++)
+			{
+				if (RedMap[i * width + j] == 255)
+					count++;
+			}
+		}
+		fprintf(pfile, "%d\n", count);
+		fclose(pfile);
+	}
+	k++;*/
 }
 VOID RGB2Binary(char *InImg, char *OutImg, int height, int width)
 {
@@ -143,8 +705,9 @@ VOID RGB2Binary(char *InImg, char *OutImg, int height, int width)
 	int iCntY;
 	int iJump;
 	int i = 0;
+
 	unsigned char* tempArray = new unsigned char[height * width];
-	unsigned char* outArray = new unsigned char[height * width];
+
 	iJump = 0;
 	for (iCntY = 0; height > iCntY; ++iCntY)
 	{  // RGB값을 찾아서 변환해 주는 곳
@@ -154,48 +717,135 @@ VOID RGB2Binary(char *InImg, char *OutImg, int height, int width)
 			i++;
 		}
 	}
-	Otzu_Threshold(tempArray, outArray, height, width);
+	Otzu_Threshold(tempArray, BinaryIMG, height, width);
+
+	//
+	//OnErosion(height, width);
+	//OnDilation(height, width);
+	//OnErosion(height, width);
+	//OnMedianFilter(height, width);
+	//OnErosion(height, width);
+	//OnDilation(height, width);
+	//OnDilation(height, width);
+	//
+
 	i = 0;
 	iJump = 0;
 	for (iCntY = 0; height > iCntY; ++iCntY)
 	{  // RGB값을 찾아서 변환해 주는 곳
 		for (iCntX = 0; width > iCntX; ++iCntX, iJump += 3)
 		{
-			OutImg[iJump] = outArray[i];
-			OutImg[iJump + 1] = outArray[i];
-			OutImg[iJump + 2] = outArray[i];
+			OutImg[iJump] = BinaryIMG[i];
+			OutImg[iJump + 1] = BinaryIMG[i];
+			OutImg[iJump + 2] = BinaryIMG[i];
 			i++;
 		}
 	}
-	/*for (iCntY = 0; height > iCntY; ++iCntY)
-	{  // RGB값을 찾아서 변환해 주는 곳
-		for (iCntX = 0; width > iCntX; ++iCntX, iJump += 3)
-		{
-			binary = (InImg[iJump] + InImg[iJump + 1] + InImg[iJump + 2]) / 3;
-			if (binary < 128)
-				binary = 0;
-			else
-				binary = 255;
-			OutImg[iJump] = binary;
-			OutImg[iJump + 1] = binary;
-			OutImg[iJump + 2] = binary;
-		}
-	}*/
 	delete[] tempArray;
-	delete[] outArray;
+}
+void LearningCard(int index)
+{
+	static int accCount = 1;
+
+	if (accCount > 10)
+	{
+		AccObject[index].area += ObjectArray[0].area;
+		AccObject[index].perim += ObjectArray[0].perim;
+		for (int i = 0; i < MAX_WIDTH * MAX_HEIGHT; i++)
+		{
+			if (RedMap[i] == 255)
+				AccObject[index].red++;
+			if (GreenMap[i] == 255)
+				AccObject[index].green++;
+			if (BlueMap[i] == 255)
+				AccObject[index].blue++;
+		}
+	}
+	if (accCount == LEARNINGCOUNT+10)
+	{
+		switch (index)
+		{
+		case 0:
+			AccObject[index].shape = DIAMOND;
+			AccObject[index].number = TWO;
+			break;
+		case 1:
+			AccObject[index].shape = DIAMOND;
+			AccObject[index].number = THREE;
+			break;
+		case 2:
+			AccObject[index].shape = DIAMOND;
+			AccObject[index].number = FIVE;
+			break;
+		case 3:
+			AccObject[index].shape = DIAMOND;
+			AccObject[index].number = SEVEN;
+			break;
+		case 4:
+			AccObject[index].shape = ClOVER;
+			AccObject[index].number = THREE;
+			break;
+		case 5:
+			AccObject[index].shape = ClOVER;
+			AccObject[index].number = FIVE;
+			break;
+		case 6:
+			AccObject[index].shape = ClOVER;
+			AccObject[index].number = SEVEN;
+			break;
+		case 7:
+			AccObject[index].shape = HEART;
+			AccObject[index].number = SEVEN;
+			break;
+		case 8:
+			AccObject[index].shape = SPADE;
+			AccObject[index].number = TWO;
+			break;
+		case 9:
+			AccObject[index].shape = SPADE;
+			AccObject[index].number = FIVE;
+			break;
+		}
+		AccObject[index].area /= accCount - 10;
+		AccObject[index].perim /= accCount - 10;
+		AccObject[index].red /= accCount - 10;
+		AccObject[index].green /= accCount - 10;
+		AccObject[index].blue /= accCount - 10;
+		FILE* pFile = NULL;
+		pFile = fopen("LearningData", "ab");
+		if (pFile == NULL)
+			return;
+		fseek(pFile, 0, SEEK_END);
+		fwrite(&AccObject[index], 1, sizeof(Feature), pFile);
+		fclose(pFile);
+		AfxMessageBox(L"학습 완료!");
+	}
+	accCount++;
+}
+void ReadingCard(int index)
+{
+	FILE* pFile = NULL;
+	pFile = fopen("LearningData", "rb");
+	if (pFile == NULL)
+		return;
+	fread(LearnedObject, 1, sizeof(Feature) * index , pFile);
+	fclose(pFile);
 }
 // CCV_CardDlg 메시지 처리기
 LRESULT CALLBACK VideoCallback(HWND hwnd, LPVIDEOHDR lpVHdr)
 {
+	static bool RunCam = true;
 	char *p = (char *)(lpVHdr->lpData);
 	char *pGray = new char[lpVHdr->dwBytesUsed];
 	char *pBinary = new char[lpVHdr->dwBytesUsed];
 	CDC *pdc = dp->GetDC(); //윈도우 DC를 얻음
 
-	int a = lpVHdr->dwBytesUsed;
+	HPEN MyPen, OldPen;
+	TCHAR result[256];
+	TCHAR cardType[16];
+	TCHAR cardNum[16];
 
 	BITMAPINFOHEADER *bmp = (BITMAPINFOHEADER *)bmp_color_head;
-	
 	StretchDIBits(
 		pdc->m_hDC,				// hDC
 		0,						// DestX
@@ -210,26 +860,15 @@ LRESULT CALLBACK VideoCallback(HWND hwnd, LPVIDEOHDR lpVHdr)
 		(LPBITMAPINFO)bmp,		// lpBitsInfo
 		DIB_RGB_COLORS,
 		SRCCOPY);				// wUsage*/
+
 	RGB2Gray(p, pGray, bmp->biHeight, bmp->biWidth);
-	StretchDIBits(
-		pdc->m_hDC,				// hDC
-		320,					// DestX
-		0,						// DestY
-		bmp->biWidth,			// nDestWidth
-		bmp->biHeight,			// nDestHeight
-		0,						// SrcX
-		0,						// SrcY
-		bmp->biWidth,			// SrcW
-		bmp->biHeight,			// SrcH
-		pGray,					// lpBits, 영상데이터
-		(LPBITMAPINFO)bmp,		// lpBitsInfo
-		DIB_RGB_COLORS,
-		SRCCOPY);				// wUsage*/
 	RGB2Binary(pGray, pBinary, bmp->biHeight, bmp->biWidth);
+
+	OnFeatureDivision(bmp->biHeight, bmp->biWidth);
 	StretchDIBits(
 		pdc->m_hDC,				// hDC
-		0,						// DestX
-		240,					// DestY
+		MAX_WIDTH,				// DestX
+		0,					// DestY
 		bmp->biWidth,			// nDestWidth
 		bmp->biHeight,			// nDestHeight
 		0,						// SrcX
@@ -240,8 +879,230 @@ LRESULT CALLBACK VideoCallback(HWND hwnd, LPVIDEOHDR lpVHdr)
 		(LPBITMAPINFO)bmp,		// lpBitsInfo
 		DIB_RGB_COLORS,
 		SRCCOPY);				// wUsage*/
+
+	OnAreaFraction(bmp->biHeight, bmp->biWidth);
+
+	for (int i = 0; i < CountFeature; i++)
+	{
+		MinERR err;
+		for (int j = 0; j < LEARNCARD + 1; j++)
+		{
+			if (LearnedObject[j].area != 0 && LearnedObject[j].perim != 0)
+			{
+				int areaErr = abs(LearnedObject[j].area - ObjectArray[i].area);
+				int perimErr = abs(LearnedObject[j].perim - ObjectArray[i].perim);
+				int redErr = abs(LearnedObject[j].red - ObjectArray[i].red);
+				/*if (perimErr == 0)
+				{
+					err.perimIndex = j;
+				}
+				if (areaErr == 0)
+				{
+					err.areaIndex = j;
+				}*/
+				if (redErr != 0 && err.minRedErr > redErr)
+				{
+					err.minRedErr = redErr;
+					err.redIndex = j;
+				}
+				if (areaErr != 0 && err.minAreaErr > areaErr)
+				{
+					err.AreaErrWeight = LearnedObject[j].area / areaErr;
+					err.minAreaErr = areaErr;
+					err.areaIndex = j;
+				}
+				if (perimErr != 0 && err.minPerimErr > perimErr)
+				{
+					err.PerimErrWeight = LearnedObject[j].perim / perimErr;
+					err.minPerimErr = perimErr;
+					err.perimIndex = j;
+				}
+			}
+			if ((err.PerimErrWeight * 10) < err.AreaErrWeight)
+			{
+				if (ObjectArray[i].red > 250 || LearnedObject[err.areaIndex].red > 250)
+				{
+					ObjectArray[i].shape = LearnedObject[err.redIndex].shape;
+					ObjectArray[i].number = LearnedObject[err.redIndex].number;
+				}
+				else
+				{
+					ObjectArray[i].shape = LearnedObject[err.areaIndex].shape;
+					ObjectArray[i].number = LearnedObject[err.areaIndex].number;
+				}
+			}
+			else
+			{
+				if (ObjectArray[i].red > 250 || LearnedObject[err.perimIndex].red > 250)
+				{
+					ObjectArray[i].shape = LearnedObject[err.redIndex].shape;
+					ObjectArray[i].number = LearnedObject[err.redIndex].number;
+				}
+				else
+				{
+					ObjectArray[i].shape = LearnedObject[err.perimIndex].shape;
+					ObjectArray[i].number = LearnedObject[err.perimIndex].number;
+				}
+			}
+
+			switch (ObjectArray[i].shape)
+			{
+			case TY_NONE:
+				lstrcpy(cardType, L"None");
+				break;
+			case SPADE:
+				lstrcpy(cardType, L"♠");
+				break;
+			case DIAMOND:
+				lstrcpy(cardType, L"◆");
+				break;
+			case ClOVER:
+				lstrcpy(cardType, L"♣");
+				break;
+			case HEART:
+				lstrcpy(cardType, L"♥");
+				break;
+			}
+			switch (ObjectArray[i].number)
+			{
+			case NUM_NONE:
+				lstrcpy(cardNum, L"None");
+				break;
+			case A:
+				lstrcpy(cardNum, L"A");
+				break;
+			case TWO:
+				lstrcpy(cardNum, L"2");
+				break;
+			case THREE:
+				lstrcpy(cardNum, L"3");
+				break;
+			case FOUR:
+				lstrcpy(cardNum, L"4");
+				break;
+			case FIVE:
+				lstrcpy(cardNum, L"5");
+				break;
+			case SIX:
+				lstrcpy(cardNum, L"6");
+				break;
+			case SEVEN:
+				lstrcpy(cardNum, L"7");
+				break;
+			case EIGHT:
+				lstrcpy(cardNum, L"8");
+				break;
+			case NINE:
+				lstrcpy(cardNum, L"9");
+				break;
+			case TEN:
+				lstrcpy(cardNum, L"10");
+				break;
+			case J:
+				lstrcpy(cardNum, L"J");
+				break;
+			case Q:
+				lstrcpy(cardNum, L"Q");
+				break;
+			case K:
+				lstrcpy(cardNum, L"K");
+				break;
+			}
+			MyPen = CreatePen(PS_SOLID, 2, RGB(255, 0, 0));
+			OldPen = (HPEN)SelectObject(pdc->m_hDC, MyPen);
+			Ellipse(pdc->m_hDC, ObjectArray[i].x - 3, ObjectArray[i].y - 3, ObjectArray[i].x + 3, ObjectArray[i].y + 3);
+			Ellipse(pdc->m_hDC, ObjectArray[i].startX - 3, ObjectArray[i].startY - 3, ObjectArray[i].startX + 3, ObjectArray[i].startY + 3);
+			Ellipse(pdc->m_hDC, ObjectArray[i].endX - 3, ObjectArray[i].endY - 3, ObjectArray[i].endX + 3, ObjectArray[i].endY + 3);
+			SelectObject(pdc->m_hDC, OldPen);
+			DeleteObject(MyPen);
+			swprintf(result, L"[%d]%s%s  ",i,cardType, cardNum);
+			TextOut(pdc->m_hDC, ObjectArray[i].x, ObjectArray[i].y, result, _tcslen(result));
+			swprintf(result, L"ID : %d, Area : %d, Perim : %d, Red : %d ,CardType : %s %s, Feature : %d       ", i, ObjectArray[i].area, ObjectArray[i].perim, ObjectArray[i].red, cardType, cardNum, CountFeature);
+			TextOut(pdc->m_hDC, MAX_WIDTH, MAX_HEIGHT + (i * 20), result, _tcslen(result));
+		}
+	}
+	for (int i = 0; i < 10; i++)
+	{
+		switch (LearnedObject[i].shape)
+		{
+		case TY_NONE:
+			lstrcpy(cardType, L"None");
+			break;
+		case SPADE:
+			lstrcpy(cardType, L"♠");
+			break;
+		case DIAMOND:
+			lstrcpy(cardType, L"◆");
+			break;
+		case ClOVER:
+			lstrcpy(cardType, L"♣");
+			break;
+		case HEART:
+			lstrcpy(cardType, L"♥");
+			break;
+		}
+		switch (LearnedObject[i].number)
+		{
+		case NUM_NONE:
+			lstrcpy(cardNum, L"None");
+			break;
+		case A:
+			lstrcpy(cardNum, L"A");
+			break;
+		case TWO:
+			lstrcpy(cardNum, L"2");
+			break;
+		case THREE:
+			lstrcpy(cardNum, L"3");
+			break;
+		case FOUR:
+			lstrcpy(cardNum, L"4");
+			break;
+		case FIVE:
+			lstrcpy(cardNum, L"5");
+			break;
+		case SIX:
+			lstrcpy(cardNum, L"6");
+			break;
+		case SEVEN:
+			lstrcpy(cardNum, L"7");
+			break;
+		case EIGHT:
+			lstrcpy(cardNum, L"8");
+			break;
+		case NINE:
+			lstrcpy(cardNum, L"9");
+			break;
+		case TEN:
+			lstrcpy(cardNum, L"10");
+			break;
+		case J:
+			lstrcpy(cardNum, L"J");
+			break;
+		case Q:
+			lstrcpy(cardNum, L"Q");
+			break;
+		case K:
+			lstrcpy(cardNum, L"K");
+			break;
+		}
+		swprintf(result, L"Area : %d, Perim : %d, Red : %d %s%s    ", LearnedObject[i].area, LearnedObject[i].perim, LearnedObject[i].red, cardType, cardNum);
+		TextOut(pdc->m_hDC, 0, MAX_HEIGHT + (i * 20), result, _tcslen(result));
+	}
+	/*TextOut(pdc->m_hDC, 0, 0, L"Color", 5);
+	TextOut(pdc->m_hDC, 320, 0, L"GrayScale", 9);
+	TextOut(pdc->m_hDC, 0, 240, L"Binary", 6);*/
+
+	//
+#if LEARNING
+	LearningCard(LEARNCARD);
+#endif
+	//
 	dp->ReleaseDC(pdc);
 
+	ZeroMemory(RedMap, sizeof(RedMap));
+	ZeroMemory(BlueMap, sizeof(BlueMap));
+	ZeroMemory(GreenMap, sizeof(GreenMap));
 	delete[] pGray;
 	delete[] pBinary;
 	return (LRESULT)TRUE;
@@ -311,8 +1172,8 @@ BOOL CCV_CardDlg::OnInitDialog()
 
 	// capture영상의 크기를 320x240으로 둔다.
 	BITMAPINFOHEADER *bmp = (BITMAPINFOHEADER *)bmp_color_head;
-	bmp->biWidth = 320;
-	bmp->biHeight = 240;
+	bmp->biWidth = MAX_WIDTH;
+	bmp->biHeight = MAX_HEIGHT;
 	capSetVideoFormat(d_cap, bmp, 40);
 	capOverlay(d_cap, TRUE);
 	capSetCallbackOnVideoStream(d_cap, &VideoCallback);
