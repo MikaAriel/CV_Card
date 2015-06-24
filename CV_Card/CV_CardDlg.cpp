@@ -18,9 +18,9 @@
 
 #define MAXAREA 7500
 
-#define LEARNING 1
-#define LEARNCARD 1
-#define READING 2
+#define LEARNING 0
+#define LEARNCARD 0
+#define READING 1
 
 unsigned char bmp_color_head[40] = {
 	40, 0, 0, 0, 184, 0, 0, 0, 148, 0,
